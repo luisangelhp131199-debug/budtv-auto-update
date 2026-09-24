@@ -1,3 +1,4 @@
+
 import json
 import os
 import requests
@@ -7,17 +8,18 @@ GIST_ID = "7e9f4cfd00e89e9faa6cea4b649cdde5"
 GIST_FILE = "canales.json"
 
 
-def find_channels(data, result):
+def buscar_canales(data, resultado):
     if isinstance(data, dict):
         if data.get("poster") and data.get("url_video"):
-            result.append(data)
+            resultado.append(data)
+
         for value in data.values():
             if isinstance(value, (dict, list)):
-                find_channels(value, result)
+                buscar_canales(value, resultado)
 
     elif isinstance(data, list):
         for item in data:
-            find_channels(item, result)
+            buscar_canales(item, resultado)
 
 
 def main():
@@ -27,90 +29,111 @@ def main():
 
     session = requests.Session()
 
-    # Consultar API de BUD TV
+    # 1. Consultar la API actual de BUD TV
     response = session.get(API_URL, timeout=40)
     response.raise_for_status()
     api_data = response.json()
 
-    channels = []
-    find_channels(api_data, channels)
+    canales_api = []
+    buscar_canales(api_data, canales_api)
 
-    if not channels:
+    if not canales_api:
         raise Exception("La API no devolvió canales reconocibles")
 
-    # Relacionar poster con URL nueva
-    by_poster = {}
+    # 2. Crear un índice por poster/logo.
+    # Solo se actualizarán coincidencias únicas.
+    por_poster = {}
 
-    for channel in channels:
-        poster = str(channel.get("poster", "")).strip()
-        url = str(channel.get("url_video", "")).strip()
+    for canal in canales_api:
+        poster = str(canal.get("poster", "")).strip()
+        url_video = str(canal.get("url_video", "")).strip()
 
-        if poster and url:
-            by_poster.setdefault(poster, []).append(url)
+        if poster and url_video:
+            por_poster.setdefault(poster, []).append(url_video)
 
+    # 3. Descargar el Gist actual
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
-    # Obtener el Gist actual
     gist_url = f"https://api.github.com/gists/{GIST_ID}"
-    response = session.get(gist_url, headers=headers, timeout=40)
+
+    response = session.get(
+        gist_url, headers=headers, timeout=40
+    )
     response.raise_for_status()
     gist = response.json()
 
     if GIST_FILE not in gist.get("files", {}):
         raise Exception("No se encontró canales.json en el Gist")
 
-    content = gist["files"][GIST_FILE].get("content")
+    archivo = gist["files"][GIST_FILE]
+    contenido = archivo.get("content")
 
-    if content is None:
-        raw_url = gist["files"][GIST_FILE].get("raw_url")
+    if contenido is None:
+        raw_url = archivo.get("raw_url")
         if not raw_url:
             raise Exception("No se pudo obtener el JSON del Gist")
 
         response = session.get(raw_url, timeout=40)
         response.raise_for_status()
-        content = response.text
+        contenido = response.text
 
-    data = json.loads(content)
+    datos = json.loads(contenido)
 
-    if not isinstance(data, list):
+    if not isinstance(datos, list):
         raise Exception("El JSON del Gist no es una lista")
 
-    updated = 0
+    # 4. Buscar por logo, NO por el dominio de la URL actual.
+    actualizados = 0
+    sin_coincidencia = 0
+    ambiguos = 0
+    revisados = 0
 
-    for item in data:
+    for item in datos:
         if not isinstance(item, dict):
             continue
 
-        old_url = str(item.get("url", "")).lower()
+        logo = str(item.get("logo", "")).strip()
+        coincidencias = por_poster.get(logo, [])
 
-        # Solo canales BUD TV que ya existen
-        if "rs.arcando.cloud/budtv/" not in old_url:
+        # No tocar entradas que no correspondan a un canal
+        # de la API de BUD TV.
+        if not coincidencias:
             continue
 
-        logo = str(item.get("logo", "")).strip()
-        matches = by_poster.get(logo, [])
+        revisados += 1
 
-        # Actualizar solo si el logo coincide con un único canal
-        if len(matches) == 1 and item.get("url") != matches[0]:
-            item["url"] = matches[0]
-            updated += 1
+        if len(coincidencias) != 1:
+            ambiguos += 1
+            continue
 
-    if updated == 0:
-        print("No hay cambios. El Gist queda igual.")
+        nueva_url = coincidencias[0]
+
+        if item.get("url") != nueva_url:
+            item["url"] = nueva_url
+            actualizados += 1
+
+    # 5. Guardar solo si hubo cambios reales
+    if actualizados == 0:
+        print(
+            "No hubo URLs diferentes. "
+            f"Canales BUD reconocidos: {revisados}; "
+            f"sin coincidencia: {sin_coincidencia}; "
+            f"ambiguos: {ambiguos}."
+        )
         return
 
-    new_content = json.dumps(
-        data, ensure_ascii=False, indent=2
+    nuevo_contenido = json.dumps(
+        datos, ensure_ascii=False, indent=2
     ) + "\n"
 
-    patch = {
+    payload = {
         "files": {
             GIST_FILE: {
-                "content": new_content
+                "content": nuevo_contenido
             }
         }
     }
@@ -118,12 +141,16 @@ def main():
     response = session.patch(
         gist_url,
         headers=headers,
-        json=patch,
+        json=payload,
         timeout=40
     )
     response.raise_for_status()
 
-    print(f"Gist actualizado: {updated} URL(s)")
+    print(
+        f"Gist actualizado: {actualizados} URL(s). "
+        f"Canales BUD reconocidos: {revisados}; "
+        f"ambiguos: {ambiguos}."
+    )
 
 
 if __name__ == "__main__":
