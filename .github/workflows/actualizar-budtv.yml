@@ -1,0 +1,30 @@
+name: Actualizar URLs BUD TV
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actualizar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencia
+        run: pip install requests
+
+      - name: Actualizar Gist si hay cambios
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: python actualizar_budtv.py
